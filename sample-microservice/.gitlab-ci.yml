@@ -1,0 +1,78 @@
+# GitLab CI/CD Pipeline for Sample Microservice
+# Using GitLab Container Registry with proper authentication
+
+stages:
+  - test
+  - build
+  - deploy-manifests
+
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+  CONTAINER_IMAGE: localhost:5005/root/sample-microservice:$CI_COMMIT_SHORT_SHA
+
+.test-template: &test-template
+  tags:
+    - docker
+  before_script:
+    - docker info
+
+# ========= STAGE 1: TEST =========
+
+unit-tests:
+  <<: *test-template
+  stage: test
+  script:
+    - echo "Running unit tests..."
+    - docker build -f Dockerfile.test -t test-image .
+    - docker run --rm test-image python -m pytest tests/ -v
+
+# ========= STAGE 2: BUILD =========
+
+build-and-push:
+  <<: *test-template
+  stage: build
+  script:
+    - echo "Building Docker image..."
+    - docker build -t $CONTAINER_IMAGE .
+    - docker tag $CONTAINER_IMAGE localhost:5005/root/sample-microservice:latest
+    
+    # Login to GitLab registry using CI job token
+    - docker login localhost:5005 -u gitlab-ci-token -p $CI_JOB_TOKEN
+    
+    - echo "Pushing images to registry..."
+    - docker push $CONTAINER_IMAGE
+    - docker push localhost:5005/root/sample-microservice:latest
+    - echo "✅ Images pushed successfully: $CONTAINER_IMAGE"
+  only:
+    - main
+
+# ========= STAGE 3: DEPLOY MANIFESTS =========
+
+update-manifests:
+  stage: deploy-manifests
+  image: alpine:latest
+  tags:
+    - docker
+  before_script:
+    - apk add --no-cache git
+  script:
+    - echo "Updating GitOps manifests with new image tag..."
+    - git clone http://gitlab-ci-token:${CI_JOB_TOKEN}@localhost:8080/root/gitops-manifests.git /tmp/manifests
+    - cd /tmp/manifests
+    
+    # Update image tag in all deployment files
+    - find . -name "*.yaml" -type f -exec sed -i "s|image:.*sample-microservice.*|image: localhost:5005/root/sample-microservice:$CI_COMMIT_SHORT_SHA|g" {} \;
+    
+    - git config user.email "gitlab-ci@localhost"
+    - git config user.name "GitLab CI"
+    - git add .
+    - git commit -m "CI: Update image to $CI_COMMIT_SHORT_SHA" || echo "No changes to commit"
+    - git push http://gitlab-ci-token:${CI_JOB_TOKEN}@localhost:8080/root/gitops-manifests.git main
+    - echo "✅ Manifests updated successfully!"
+  only:
+    - main
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"

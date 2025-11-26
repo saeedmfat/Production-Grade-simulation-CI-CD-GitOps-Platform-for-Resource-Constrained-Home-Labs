@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+namespace: production
+
+commonLabels:
+  environment: production
+
+patches:
+  - target:
+      kind: Rollout
+      name: sample-microservice
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: "production"
+      - op: replace
+        path: /spec/strategy
+        value:
+          canary:
+            steps:
+            - setWeight: 20
+            - pause: {duration: 30s}
+            - setWeight: 50
+            - pause: {duration: 30s}
+            - setWeight: 100
+            - pause: {duration: 0}
